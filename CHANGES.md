@@ -17,6 +17,8 @@ Breaking Changes:
 Features:
  - Added `RbgImage::from_raw_bgr` and `RbgaImage::from_raw_bgra` constructors, which convert
    from `BGR(A)` with an optimized specialization for bytes of `BGRA`
+ - Added `FromPrimitive` conversions between `f32` and `i8`, `i16`, `i32`. Signed integers use
+   the symmetric "snorm" range, mapping `-1.0..=1.0` to `-MAX..=MAX`.
 
 Structural changes:
   - Increased MSRV to 1.88.0 (from 1.85.0)
