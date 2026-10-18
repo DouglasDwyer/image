@@ -519,6 +519,11 @@ define_colors! {
 }
 
 /// Convert from one pixel component type to another. For example, convert from `u8` to `f32` pixel values.
+///
+/// Unsigned integers map to and from the floating point range `0.0..=1.0`. Signed integers use
+/// the symmetric range `-1.0..=1.0`, matching the "snorm" formats of graphics APIs: `-1.0` and
+/// `1.0` correspond to `-MAX` and `MAX` of the integer type. The most negative integer (e.g.
+/// `i8::MIN`) lies outside this range and is converted to `-1.0`, the same as `-MAX`.
 pub trait FromPrimitive<Component> {
     /// Converts from any pixel component type to this type.
     fn from_primitive(component: Component) -> Self;
@@ -562,6 +567,50 @@ impl FromPrimitive<f32> for u16 {
     fn from_primitive(float: f32) -> Self {
         let x = handle_nan_before_conversion(float);
         (x * u16::MAX as f32 + 0.5) as u16
+    }
+}
+
+// Signed integers use the symmetric "snorm" mapping `-1.0..=1.0` <-> `-MAX..=MAX`, as in
+// graphics APIs. Float-to-int conversion rounds to nearest (ties away from zero), clamps out of
+// range values, and maps NaN to 0, the neutral value.
+
+impl FromPrimitive<f32> for i8 {
+    fn from_primitive(float: f32) -> Self {
+        (float.clamp(-1.0, 1.0) * i8::MAX as f32).round() as i8
+    }
+}
+
+impl FromPrimitive<f32> for i16 {
+    fn from_primitive(float: f32) -> Self {
+        (float.clamp(-1.0, 1.0) * i16::MAX as f32).round() as i16
+    }
+}
+
+impl FromPrimitive<f32> for i32 {
+    fn from_primitive(float: f32) -> Self {
+        // `i32::MAX` is not exactly representable as `f32`, so scale in `f64`.
+        (float.clamp(-1.0, 1.0) as f64 * i32::MAX as f64).round() as i32
+    }
+}
+
+// from i8, i16, i32:
+
+impl FromPrimitive<i8> for f32 {
+    fn from_primitive(int: i8) -> Self {
+        (int as f32 / i8::MAX as f32).max(-1.0)
+    }
+}
+
+impl FromPrimitive<i16> for f32 {
+    fn from_primitive(int: i16) -> Self {
+        (int as f32 / i16::MAX as f32).max(-1.0)
+    }
+}
+
+impl FromPrimitive<i32> for f32 {
+    fn from_primitive(int: i32) -> Self {
+        // `i32` does not fit into the `f32` mantissa, divide in `f64` first.
+        (int as f64 / i32::MAX as f64).max(-1.0) as f32
     }
 }
 
@@ -999,6 +1048,70 @@ impl<T: Primitive> Invert for Rgb<T> {
 #[cfg(test)]
 mod tests {
     use super::{Luma, LumaA, Pixel, Rgb, Rgba};
+
+    #[test]
+    fn signed_from_f32() {
+        use super::FromPrimitive;
+
+        assert_eq!(i8::from_primitive(1.0), 127);
+        assert_eq!(i8::from_primitive(-1.0), -127);
+        assert_eq!(i8::from_primitive(0.0), 0);
+        assert_eq!(i8::from_primitive(0.5), 64);
+        assert_eq!(i8::from_primitive(-0.5), -64);
+        assert_eq!(i8::from_primitive(2.0), 127);
+        assert_eq!(i8::from_primitive(-2.0), -127);
+        assert_eq!(i8::from_primitive(f32::NAN), 0);
+        assert_eq!(i8::from_primitive(f32::INFINITY), 127);
+        assert_eq!(i8::from_primitive(f32::NEG_INFINITY), -127);
+
+        assert_eq!(i16::from_primitive(1.0), 32767);
+        assert_eq!(i16::from_primitive(-1.0), -32767);
+        assert_eq!(i16::from_primitive(0.0), 0);
+        assert_eq!(i16::from_primitive(-5.0), -32767);
+        assert_eq!(i16::from_primitive(f32::NAN), 0);
+
+        assert_eq!(i32::from_primitive(1.0), i32::MAX);
+        assert_eq!(i32::from_primitive(-1.0), -i32::MAX);
+        assert_eq!(i32::from_primitive(0.0), 0);
+        assert_eq!(i32::from_primitive(0.5), 1073741824);
+        assert_eq!(i32::from_primitive(f32::NAN), 0);
+    }
+
+    #[test]
+    fn signed_to_f32() {
+        use super::FromPrimitive;
+
+        assert_eq!(f32::from_primitive(127i8), 1.0);
+        assert_eq!(f32::from_primitive(-127i8), -1.0);
+        assert_eq!(f32::from_primitive(i8::MIN), -1.0);
+        assert_eq!(f32::from_primitive(0i8), 0.0);
+
+        assert_eq!(f32::from_primitive(i16::MAX), 1.0);
+        assert_eq!(f32::from_primitive(-i16::MAX), -1.0);
+        assert_eq!(f32::from_primitive(i16::MIN), -1.0);
+
+        assert_eq!(f32::from_primitive(i32::MAX), 1.0);
+        assert_eq!(f32::from_primitive(-i32::MAX), -1.0);
+        assert_eq!(f32::from_primitive(i32::MIN), -1.0);
+        assert_eq!(f32::from_primitive(0i32), 0.0);
+    }
+
+    #[test]
+    fn signed_roundtrip() {
+        use super::FromPrimitive;
+
+        for v in -127i8..=127 {
+            assert_eq!(i8::from_primitive(f32::from_primitive(v)), v);
+        }
+        for v in -32767i16..=32767 {
+            assert_eq!(i16::from_primitive(f32::from_primitive(v)), v);
+        }
+        for v in [-i32::MAX, -1_000_000_000, -1, 0, 1, 123_456_789, i32::MAX] {
+            let back = i32::from_primitive(f32::from_primitive(v));
+            // `f32` only has 24 bits of precision.
+            assert!((back as i64 - v as i64).abs() <= 1 << 7, "{v} -> {back}");
+        }
+    }
 
     #[test]
     fn test_apply_with_alpha_rgba() {
